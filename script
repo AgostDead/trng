@@ -4,7 +4,7 @@
 -- ============================================
 
 -- 1. ЗАГРУЗКА ТВОЕЙ БИБЛИОТЕКИ
-local PainKillerUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Angry66gsjjd/My-Library/main/dist/main.lua"))()
+local PainKillerUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/AgostDead/My-Library/main/dist/main.lua"))()
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
