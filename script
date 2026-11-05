@@ -1,0 +1,1893 @@
+-- ============================================
+--  UNIVERSAL GUI v74 (PAINKILLER UI EDITION)
+--  + Event Boss (Pumpkin King) + ToggleKey (RShift)
+-- ============================================
+
+-- 1. ЗАГРУЗКА ТВОЕЙ БИБЛИОТЕКИ
+local PainKillerUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Angry66gsjjd/My-Library/main/dist/main.lua"))()
+
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+local VirtualUser = game:GetService("VirtualUser")
+local HttpService = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local CollectionService = game:GetService("CollectionService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local UserInputService = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+local LocalPlayer = Players.LocalPlayer
+
+-- ============================================
+--  КОНФИГ (АВТОСЕЙВ)
+-- ============================================
+local CONFIG_FILE = "UniversalGUI_PainKiller_Config.json"
+local defaultConfig = {
+    autoOrbs = true, autoAttack = false, holdingMobs = false,
+    mobCollision = false, stealthMode = true, orbFilter = {},
+    autoBoss = false, autoSpawnBoss = false,
+    selectedBosses = {"White Boss"},
+    autoTeleportAda4 = false, teleportInterval = 5,
+    autoSacrifice = false, sacrificeDelay = 0.1,
+    smartSacrifice = false, smartThreshold = 2,
+    autoDungeon = false, dungeonDifficulty = "Easy",
+    autoDungeonAFK = false,
+    godMode = false, bigHitbox = false,
+    godModeDepth = 15, hitboxSize = 10,
+    bossRun = false, bossRunRadius = 6,
+    bossRunSpeed = 2, 
+    fAttackSpeed = 0.01,
+    eventMobFarm = false,
+    eventBossFarm = false -- НОВОЕ
+}
+
+local function loadConfig()
+    if not isfile or not readfile or not isfile(CONFIG_FILE) then return defaultConfig end
+    local ok, data = pcall(function() return HttpService:JSONDecode(readfile(CONFIG_FILE)) end)
+    if ok and type(data) == "table" then
+        for k, v in pairs(defaultConfig) do if data[k] == nil then data[k] = v end end
+        return data
+    end
+    return defaultConfig
+end
+
+local function saveConfig(config)
+    if not writefile then return end
+    pcall(function() writefile(CONFIG_FILE, HttpService:JSONEncode(config)) end)
+end
+
+local Config = loadConfig()
+
+if type(Config.selectedBosses) == "table" and type(Config.selectedBosses[1]) == "nil" then
+    local newList = {}
+    for name, isSel in pairs(Config.selectedBosses) do
+        if isSel then table.insert(newList, name) end
+    end
+    if #newList > 0 then Config.selectedBosses = newList else Config.selectedBosses = {"White Boss"} end
+    saveConfig(Config)
+end
+
+-- ============================================
+--  НАСТРОЙКИ
+-- ============================================
+local MAX_MOBS_PER_BATCH = 3
+local BATCH_DELAY = 0.15
+local HEARTBEAT_DELAY = 0.1
+local TELEPORT_JITTER = 1.5
+local CIRCLE_RADIUS = 12
+local autoOrbsDelay = 0.05
+
+-- ============================================
+--  СПИСОК ОРБОВ + ФИЛЬТР
+-- ============================================
+local ALL_ORB_TYPES = {
+    "Basic", "Mega", "Crystal", "Ultra", "Gold", "Secret",
+    "HyperRed", "Godly", "Amethyst", "HyperWhite",
+    "HyperGreen", "Celestial", "Chrome", "Void",
+    "Divine", "Nova", "Light", "Darkness",
+    "Eclipse", "Star", "Netherite", "Stump",
+    "Titan", "Cursed2026", "Seed2026", "Roulette",
+    "GoldenTicket", "Release2026", "Azurite2026", "Eternal2026"
+}
+
+local SELECTED_ORBS = Config.orbFilter
+if not SELECTED_ORBS or next(SELECTED_ORBS) == nil then
+    SELECTED_ORBS = {}
+    local DEFAULT_OFF = {"Basic", "Mega", "Crystal", "Ultra", "Gold"}
+    local isOff = {}
+    for _, n in pairs(DEFAULT_OFF) do isOff[n] = true end
+    for _, name in pairs(ALL_ORB_TYPES) do SELECTED_ORBS[name] = not isOff[name] end
+    Config.orbFilter = SELECTED_ORBS
+end
+
+local function getOrbTypeFromName(orbName)
+    local suffix = orbName:match("Orb_(.+)")
+    return suffix or "Unknown"
+end
+
+local function shouldTeleportOrb(orbName)
+    if string.sub(orbName, 1, 4) ~= "Orb_" then return false end
+    return SELECTED_ORBS[getOrbTypeFromName(orbName)] == true
+end
+
+-- ============================================
+--  ЛОГИКА ОРБОВ И МОБОВ
+-- ============================================
+local function teleportOrbs(folderName)
+    local player = Players.LocalPlayer
+    if not player or not player.Character then return 0 end
+    local root = player.Character:FindFirstChild("HumanoidRootPart")
+    if not root then return 0 end
+    local orbs = Workspace:FindFirstChild("Orbs")
+    if not orbs then return 0 end
+
+    local count = 0
+    local pos = root.Position
+    for _, ada in pairs(orbs:GetChildren()) do
+        if ada:IsA("Folder") and (folderName == "All" or ada.Name == folderName) then
+            for _, obj in pairs(ada:GetChildren()) do
+                if shouldTeleportOrb(obj.Name) then
+                    if obj:IsA("BasePart") then
+                        obj.CFrame = CFrame.new(pos); obj.Anchored = true; obj.CanCollide = false
+                        count = count + 1
+                    elseif obj:IsA("Model") then
+                        local p = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
+                        if p then
+                            obj:PivotTo(CFrame.new(pos))
+                            for _, d in pairs(obj:GetDescendants()) do if d:IsA("BasePart") then d.Anchored = true; d.CanCollide = false end end
+                            count = count + 1
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return count
+end
+
+local function getMobs()
+    local folder = Workspace:FindFirstChild("QuestMobs")
+    if not folder then return {} end
+    local list = {}
+    for _, mob in pairs(folder:GetChildren()) do if mob:IsA("Model") then table.insert(list, mob) end end
+    return list
+end
+
+local function getMobRoot(mob)
+    if not mob or not mob.Parent then return nil end
+    return mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChild("Torso")
+        or mob:FindFirstChild("UpperTorso") or mob:FindFirstChildWhichIsA("BasePart")
+end
+
+local function freezeMob(mob)
+    if not mob or not mob.Parent then return end
+    for _, child in pairs(mob:GetDescendants()) do
+        if child:IsA("Script") or child:IsA("LocalScript") then
+            child.Disabled = true
+        end
+    end
+    for _, part in pairs(mob:GetDescendants()) do
+        if part:IsA("BasePart") then
+            pcall(function() part:SetNetworkOwner(Players.LocalPlayer) end)
+            part.CanCollide = Config.mobCollision
+        end
+    end
+    local hum = mob:FindFirstChildWhichIsA("Humanoid")
+    if hum then
+        hum.WalkSpeed = 0
+        hum.JumpPower = 0
+        hum.PlatformStand = true
+        for _, state in pairs(Enum.HumanoidStateType:GetEnumItems()) do
+            pcall(function() hum:SetStateEnabled(state, false) end)
+        end
+        hum:ChangeState(Enum.HumanoidStateType.Physics)
+    end
+end
+
+local function prepareMob(mob)
+    if not mob or not mob.Parent then return end
+    freezeMob(mob)
+end
+
+local function teleportMobTo(mob, targetPos)
+    if not mob or not mob.Parent then return false end
+    local primary = mob.PrimaryPart or mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChild("Torso") or mob:FindFirstChildWhichIsA("BasePart")
+    if not primary then return false end
+    local jitter = Vector3.new((math.random() - 0.5) * TELEPORT_JITTER, 0, (math.random() - 0.5) * TELEPORT_JITTER)
+    local offset = (targetPos + jitter) - primary.Position
+    for _, part in pairs(mob:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CFrame = part.CFrame + offset
+            pcall(function() part.AssemblyLinearVelocity = Vector3.zero; part.AssemblyAngularVelocity = Vector3.zero end)
+        end
+    end
+    return true
+end
+
+local function getCirclePositions(player, mobs)
+    local myRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return {} end
+    local positions = {}
+    local total = #mobs
+    if total == 0 then return positions end
+    for i = 1, total do
+        local angle = (i / total) * math.pi * 2
+        positions[i] = myRoot.Position + Vector3.new(math.cos(angle) * CIRCLE_RADIUS, 0, math.sin(angle) * CIRCLE_RADIUS)
+    end
+    return positions
+end
+
+local holdingMobs = false
+local heartbeatConn = nil
+local lastHoldTick = 0
+
+local function startHolding()
+    if holdingMobs then return end
+    holdingMobs = true
+    heartbeatConn = RunService.Heartbeat:Connect(function()
+        if not holdingMobs then return end
+        local now = tick()
+        if Config.stealthMode and (now - lastHoldTick) < HEARTBEAT_DELAY then return end
+        lastHoldTick = now
+        local player = Players.LocalPlayer
+        if not player or not player.Character then return end
+        local myRoot = player.Character:FindFirstChild("HumanoidRootPart")
+        if not myRoot then return end
+        local mobs = getMobs()
+        if #mobs == 0 then return end
+        local positions = getCirclePositions(player, mobs)
+        for i, mob in pairs(mobs) do if positions[i] then teleportMobTo(mob, positions[i]) end end
+    end)
+end
+
+local function stopHolding()
+    holdingMobs = false
+    if heartbeatConn then heartbeatConn:Disconnect(); heartbeatConn = nil end
+end
+
+local function collectMobsOnce()
+    local player = Players.LocalPlayer
+    if not player or not player.Character then return 0, "Нет персонажа" end
+    local myRoot = player.Character:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return 0, "Нет HumanoidRootPart" end
+    local mobs = getMobs()
+    if #mobs == 0 then return 0, "Мобы не найдены" end
+    local count = 0
+    local total = #mobs
+    local positions = getCirclePositions(player, mobs)
+    local batchSize = Config.stealthMode and MAX_MOBS_PER_BATCH or total
+    for i = 1, total, batchSize do
+        for j = i, math.min(i + batchSize - 1, total) do
+            local mob = mobs[j]
+            local targetPos = positions[j]
+            if mob and targetPos then
+                prepareMob(mob)
+                if teleportMobTo(mob, targetPos) then count = count + 1 end
+            end
+        end
+        if i + batchSize <= total then task.wait(BATCH_DELAY) end
+    end
+    return count, "OK"
+end
+
+local function attackMob(mob)
+    if not mob or not mob.Parent then return false end
+    local cd = mob:FindFirstChildWhichIsA("ClickDetector", true)
+    if cd and fireclickdetector then pcall(function() fireclickdetector(cd) end); return true end
+    return false
+end
+
+local autoAttackOn = false
+local autoAttackThread = nil
+local ATTACK_DELAY = 0.15
+
+local function attackLoop()
+    while autoAttackOn do
+        local player = Players.LocalPlayer
+        if player and player.Character then
+            local myRoot = player.Character:FindFirstChild("HumanoidRootPart")
+            if myRoot then
+                for _, mob in pairs(getMobs()) do
+                    local mr = getMobRoot(mob)
+                    if mr and (mr.Position - myRoot.Position).Magnitude < 30 then
+                        attackMob(mob)
+                        task.wait(ATTACK_DELAY)
+                    end
+                end
+            end
+        end
+        task.wait(0.1)
+    end
+end
+
+-- ============================================
+--  АВТОФАРМ БОССА + БЕГ ВОКРУГ + F-АТАКА
+-- ============================================
+local autoBossOn = false
+local autoSpawnBossOn = Config.autoSpawnBoss or false
+local bossThread = nil
+local spawnThread = nil
+local currentTargetBoss = nil 
+local hasTeleportedToWaitZone = false
+local hasTeleportedToVoid = false
+local hasTeleportedToNormalBoss = false
+local bossRunOn = false
+local bossRunThread = nil
+
+local function fireRemote(remoteName, ...)
+    local remote = ReplicatedStorage:FindFirstChild(remoteName)
+    if remote and remote:IsA("RemoteEvent") then
+        local args = {...}
+        pcall(function() remote:FireServer(table.unpack(args)) end)
+        return true
+    end
+    return false
+end
+
+local function isBossAlive(bossModel)
+    if not bossModel or not bossModel.Parent then return false end
+    if bossModel.Name:match("Void") then return true end
+    local hum = bossModel:FindFirstChildWhichIsA("Humanoid")
+    return hum and hum.Health > 0
+end
+
+local function getVoidBoss()
+    local v = Workspace:FindFirstChild("VoidOverlord")
+    if v then return v end
+    local bosses = Workspace:FindFirstChild("bosses")
+    if bosses then
+        local v2 = bosses:FindFirstChild("VoidOverlord") or bosses:FindFirstChild("Void")
+        if v2 then return v2 end
+    end
+    for _, obj in pairs(Workspace:GetChildren()) do
+        if obj.Name:match("Void") and obj:IsA("Model") then return obj end
+    end
+    return nil
+end
+
+local function getBossModelByName(bossName)
+    local modelName = bossName
+    if bossName == "Void Overlord" then modelName = "VoidOverlord" end
+    local boss = Workspace:FindFirstChild(modelName)
+    if not boss then
+        local bossesFolder = Workspace:FindFirstChild("bosses")
+        if bossesFolder then boss = bossesFolder:FindFirstChild(modelName) end
+    end
+    return boss
+end
+
+local function equipCombatTool()
+    local char = LocalPlayer.Character
+    if not char then return end
+    if char:FindFirstChild("Combat") then return end
+    local backpack = LocalPlayer:FindFirstChild("Backpack")
+    if backpack then
+        local tool = backpack:FindFirstChild("Combat")
+        if tool then
+            local humanoid = char:FindFirstChildOfClass("Humanoid")
+            if humanoid then humanoid:EquipTool(tool) end
+        end
+    end
+end
+
+local function pressF()
+    pcall(function()
+        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
+        task.wait(0.01)
+        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+    end)
+end
+
+local function fastClickBoss(boss)
+    if not boss or not boss.Parent then return end
+    local cd = boss:FindFirstChildWhichIsA("ClickDetector", true)
+    if cd and fireclickdetector then pcall(function() fireclickdetector(cd) end) end
+    local tool = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildWhichIsA("Tool")
+    if tool then pcall(function() tool:Activate() end) end
+    local punchRemote = ReplicatedStorage:FindFirstChild("PunchHit")
+    if punchRemote then pcall(function() punchRemote:FireServer() end) end
+    pcall(function() VirtualUser:Button1Down(Vector2.new(0,0)); VirtualUser:Button1Up(Vector2.new(0,0)) end)
+    
+    pressF()
+end
+
+local function bossRunLoop()
+    local player = Players.LocalPlayer
+    local character = player.Character
+    if not character then return end
+    local myRoot = character:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return end
+    
+    local angle = 0
+    local speed = Config.bossRunSpeed or 2
+    
+    while bossRunOn do
+        local targetBoss = currentTargetBoss
+        if not targetBoss or not isBossAlive(targetBoss) then
+            local voidBoss = getVoidBoss()
+            if voidBoss then targetBoss = voidBoss end
+            if not targetBoss then
+                for _, bossName in pairs(Config.selectedBosses) do
+                    if bossName ~= "Void Overlord" then
+                        local boss = getBossModelByName(bossName)
+                        if isBossAlive(boss) then targetBoss = boss; break end
+                    end
+                end
+            end
+        end
+        
+        if targetBoss then
+            local bossRoot = targetBoss:FindFirstChild("HumanoidRootPart") or targetBoss:FindFirstChild("Torso") or targetBoss:FindFirstChildWhichIsA("BasePart")
+            if bossRoot then
+                angle = angle + (speed * 0.05)
+                local radius = Config.bossRunRadius or 6
+                local targetPos = bossRoot.Position + Vector3.new(
+                    math.cos(angle) * radius,
+                    0,
+                    math.sin(angle) * radius
+                )
+                
+                myRoot.CFrame = CFrame.new(targetPos)
+                myRoot.AssemblyLinearVelocity = Vector3.zero
+                myRoot.AssemblyAngularVelocity = Vector3.zero
+                
+                fastClickBoss(targetBoss)
+            end
+        end
+        task.wait(Config.fAttackSpeed or 0.01)
+    end
+end
+
+local function startBossRun()
+    if bossRunOn then return end
+    bossRunOn = true
+    Config.bossRun = true
+    saveConfig(Config)
+    bossRunThread = task.spawn(bossRunLoop)
+end
+
+local function stopBossRun()
+    bossRunOn = false
+    Config.bossRun = false
+    saveConfig(Config)
+    if bossRunThread then task.cancel(bossRunThread); bossRunThread = nil end
+end
+
+local function spawnBossLoop()
+    while autoSpawnBossOn do
+        local player = Players.LocalPlayer
+        if player and player.Character then
+            for _, bossName in pairs(Config.selectedBosses) do
+                local boss = getBossModelByName(bossName)
+                if not isBossAlive(boss) and bossName ~= "Void Overlord" then
+                    fireRemote("BossSpawnRequest", bossName) 
+                end
+            end
+        end
+        task.wait(2)
+    end
+end
+
+local function bossFarmLoop()
+    while autoBossOn do
+        local player = Players.LocalPlayer
+        if not player or not player.Character then task.wait(1); continue end
+        local myRoot = player.Character:FindFirstChild("HumanoidRootPart")
+        if not myRoot then task.wait(1); continue end
+        local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+        
+        if humanoid and humanoid.Health <= 0 then
+            currentTargetBoss = nil
+            hasTeleportedToVoid = false
+            hasTeleportedToWaitZone = false
+            hasTeleportedToNormalBoss = false
+            task.wait(1)
+            continue
+        end
+
+        local voidSelected = table.find(Config.selectedBosses, "Void Overlord")
+        if voidSelected then
+            local voidBoss = getVoidBoss()
+            if not voidBoss then
+                hasTeleportedToVoid = false
+                if not hasTeleportedToWaitZone then
+                    local waitZone = Workspace:FindFirstChild("VoidWaitZone")
+                    if waitZone then
+                        local zonePart = waitZone:FindFirstChildWhichIsA("BasePart") or waitZone
+                        if zonePart and zonePart:IsA("BasePart") then
+                            myRoot.CFrame = CFrame.new(zonePart.Position + Vector3.new(0, 3, 0))
+                            myRoot.AssemblyLinearVelocity = Vector3.zero
+                            myRoot.AssemblyAngularVelocity = Vector3.zero
+                            hasTeleportedToWaitZone = true 
+                        end
+                    end
+                end
+            else
+                if not hasTeleportedToVoid then
+                    local voidRoot = voidBoss:FindFirstChild("HumanoidRootPart") or voidBoss:FindFirstChild("Torso") or voidBoss:FindFirstChildWhichIsA("BasePart")
+                    if voidRoot then
+                        myRoot.CFrame = CFrame.new(voidRoot.Position)
+                        myRoot.AssemblyLinearVelocity = Vector3.zero
+                        myRoot.AssemblyAngularVelocity = Vector3.zero
+                        hasTeleportedToVoid = true 
+                    end
+                end
+                currentTargetBoss = voidBoss
+            end
+        end
+
+        if currentTargetBoss and not isBossAlive(currentTargetBoss) then
+            currentTargetBoss = nil
+            hasTeleportedToVoid = false
+            hasTeleportedToWaitZone = false
+            hasTeleportedToNormalBoss = false
+        end
+
+        if not currentTargetBoss or (currentTargetBoss and not currentTargetBoss.Name:match("Void")) then
+            for _, bossName in pairs(Config.selectedBosses) do
+                if bossName ~= "Void Overlord" then
+                    local boss = getBossModelByName(bossName)
+                    if isBossAlive(boss) then
+                        if currentTargetBoss ~= boss then
+                            currentTargetBoss = boss
+                            hasTeleportedToNormalBoss = false 
+                        end
+                        break 
+                    end
+                end
+            end
+        end
+
+        if currentTargetBoss and not currentTargetBoss.Name:match("Void") then
+            if not hasTeleportedToNormalBoss then
+                local bossRoot = currentTargetBoss:FindFirstChild("HumanoidRootPart") or currentTargetBoss:FindFirstChild("Torso") or currentTargetBoss:FindFirstChildWhichIsA("BasePart")
+                if bossRoot then
+                    myRoot.CFrame = CFrame.new(bossRoot.Position)
+                    myRoot.AssemblyLinearVelocity = Vector3.zero
+                    myRoot.AssemblyAngularVelocity = Vector3.zero
+                    hasTeleportedToNormalBoss = true
+                end
+            end
+        end
+        
+        if currentTargetBoss then
+            if currentTargetBoss.Name:match("Void") and not hasTeleportedToVoid then
+            elseif not currentTargetBoss.Name:match("Void") and not hasTeleportedToNormalBoss then
+            else
+                equipCombatTool()
+                fastClickBoss(currentTargetBoss)
+            end
+        end
+        task.wait(Config.fAttackSpeed or 0.01) 
+    end
+end
+
+local function startBossFarm()
+    if autoBossOn then return end
+    autoBossOn = true
+    Config.autoBoss = true
+    saveConfig(Config)
+    currentTargetBoss = nil
+    hasTeleportedToWaitZone = false
+    hasTeleportedToVoid = false
+    hasTeleportedToNormalBoss = false
+    bossThread = task.spawn(bossFarmLoop)
+end
+
+local function stopBossFarm()
+    autoBossOn = false
+    Config.autoBoss = false
+    saveConfig(Config)
+    currentTargetBoss = nil
+    hasTeleportedToWaitZone = false
+    hasTeleportedToVoid = false
+    hasTeleportedToNormalBoss = false
+    if bossThread then task.cancel(bossThread); bossThread = nil end
+end
+
+local function startAutoSpawn()
+    if autoSpawnBossOn then return end
+    autoSpawnBossOn = true
+    Config.autoSpawnBoss = true
+    saveConfig(Config)
+    spawnThread = task.spawn(spawnBossLoop)
+end
+
+local function stopAutoSpawn()
+    autoSpawnBossOn = false
+    Config.autoSpawnBoss = false
+    saveConfig(Config)
+    if spawnThread then task.cancel(spawnThread); spawnThread = nil end
+end
+
+-- ============================================
+--  ТЕЛЕПОРТ ИГРОКА К ADA4.ASC1.ASC1IC
+-- ============================================
+local autoTeleportAda4 = false
+local teleportThread = nil
+local teleportTimeLeft = 0
+local adaTeleportStatus = nil
+
+local function getAda4Part()
+    local ada4 = Workspace:FindFirstChild("ada4")
+    if not ada4 then return nil end
+    local asc1 = ada4:FindFirstChild("asc1")
+    if not asc1 then return nil end
+    return asc1:FindFirstChild("asc1ic") or asc1:FindFirstChildWhichIsA("BasePart")
+end
+
+local function teleportPlayerToAda4()
+    local player = Players.LocalPlayer
+    if not player or not player.Character then return false end
+    local myRoot = player.Character:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return false end
+    local target = getAda4Part()
+    if not target then return false end
+
+    local targetPos
+    if target:IsA("BasePart") then
+        targetPos = target.Position
+    elseif target:IsA("Model") then
+        local primary = target.PrimaryPart or target:FindFirstChildWhichIsA("BasePart")
+        if primary then targetPos = primary.Position end
+    end
+
+    if not targetPos then return false end
+
+    myRoot.CFrame = CFrame.new(targetPos + Vector3.new(0, 3, 0))
+    myRoot.AssemblyLinearVelocity = Vector3.zero
+    myRoot.AssemblyAngularVelocity = Vector3.zero
+    return true
+end
+
+local function teleportLoop()
+    while autoTeleportAda4 do
+        local interval = Config.teleportInterval or 5
+        teleportTimeLeft = interval
+        
+        while teleportTimeLeft > 0 and autoTeleportAda4 do
+            task.wait(0.1)
+            teleportTimeLeft = teleportTimeLeft - 0.1
+            if adaTeleportStatus then
+                pcall(function()
+                    adaTeleportStatus:SetTitle(string.format("ТП к объекту через: %.1fс", math.max(0, teleportTimeLeft)))
+                    adaTeleportStatus:SetDesc(autoTeleportAda4 and "ВКЛЮЧЕН (тебя тянет к объекту)" or "ВЫКЛЮЧЕН")
+                end)
+            end
+        end
+        
+        if autoTeleportAda4 then
+            teleportPlayerToAda4()
+        end
+    end
+end
+
+local function startAutoTeleport()
+    if autoTeleportAda4 then return end
+    autoTeleportAda4 = true
+    Config.autoTeleportAda4 = true
+    saveConfig(Config)
+    teleportThread = task.spawn(teleportLoop)
+end
+
+local function stopAutoTeleport()
+    autoTeleportAda4 = false
+    Config.autoTeleportAda4 = false
+    saveConfig(Config)
+    teleportTimeLeft = 0
+    if teleportThread then task.cancel(teleportThread); teleportThread = nil end
+    if adaTeleportStatus then
+        pcall(function()
+            adaTeleportStatus:SetTitle("Телепорт к объекту выключен")
+            adaTeleportStatus:SetDesc("Нажми кнопку, чтобы запустить")
+        end)
+    end
+end
+
+-- ============================================
+--  ГЕЙМПАСС АНЛОК + УМНЫЙ АВТО-ФАРМ
+-- ============================================
+local autoSacOn = false
+local sacThread = nil
+local SAC_DELAY = Config.sacrificeDelay or 0.1
+local SMART_THRESHOLD = Config.smartThreshold or 2
+
+local AutoFarmToggle = ReplicatedStorage:FindFirstChild("AutoFarmToggle")
+local SacrificeEvent = ReplicatedStorage:FindFirstChild("SacrificeEvent")
+
+local function unlockGamepass()
+    pcall(function()
+        LocalPlayer:SetAttribute("AutoFarmAccess", true)
+        LocalPlayer:SetAttribute("AutoSac", true)
+        LocalPlayer:SetAttribute("AutoTrain", true)
+        LocalPlayer:SetAttribute("AutoUpgradeSac", true)
+        LocalPlayer:SetAttribute("AutoUpgradeCash", true)
+    end)
+
+    if AutoFarmToggle then
+        pcall(function() AutoFarmToggle:FireServer("AutoSac", true) end)
+        pcall(function() AutoFarmToggle:FireServer("AutoTrain", true) end)
+        pcall(function() AutoFarmToggle:FireServer("AutoUpgradeSac", true) end)
+        pcall(function() AutoFarmToggle:FireServer("AutoUpgradeCash", true) end)
+    end
+end
+
+local function getLevel()
+    local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
+    if not leaderstats then return 0 end
+    local lvl = leaderstats:FindFirstChild("Level")
+    if not lvl then return 0 end
+    return lvl.Value
+end
+
+local function clickMaxButtons()
+    local upgradesGui = LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("upgrades")
+    if not upgradesGui then return end
+    local frame = upgradesGui:FindFirstChild("Frame")
+    if not frame then return end
+    
+    for _, obj in pairs(frame:GetDescendants()) do
+        if obj:IsA("TextButton") and (obj.Text == "Max" or obj.Text == "MAX") and obj.Visible then
+            pcall(function() obj:Activate() end)
+            pcall(function() fireclickdetector(obj) end)
+            pcall(function() obj.MouseButton1Click:Fire() end)
+        end
+    end
+end
+
+local function smartSacrificeLoop()
+    local lastLevel = getLevel()
+    local noGrowthTime = 0
+    
+    while autoSacOn do
+        local currentLevel = getLevel()
+        
+        if currentLevel > lastLevel then
+            lastLevel = currentLevel
+            noGrowthTime = 0
+        else
+            noGrowthTime = noGrowthTime + SAC_DELAY
+        end
+        
+        if noGrowthTime >= SMART_THRESHOLD then
+            if AutoFarmToggle then
+                pcall(function() AutoFarmToggle:FireServer("AutoSac", true) end)
+            end
+            if SacrificeEvent then
+                pcall(function() SacrificeEvent:FireServer() end)
+            end
+            clickMaxButtons()
+            noGrowthTime = 0
+        end
+        
+        task.wait(SAC_DELAY)
+    end
+end
+
+local function startAutoSac()
+    if autoSacOn then return end
+    autoSacOn = true
+    Config.autoSacrifice = true
+    saveConfig(Config)
+    
+    if Config.smartSacrifice then
+        sacThread = task.spawn(smartSacrificeLoop)
+    else
+        sacThread = task.spawn(function()
+            while autoSacOn do
+                if AutoFarmToggle then
+                    pcall(function() AutoFarmToggle:FireServer("AutoSac", true) end)
+                    pcall(function() AutoFarmToggle:FireServer("AutoUpgradeSac", true) end)
+                end
+                clickMaxButtons()
+                if SacrificeEvent then
+                    pcall(function() SacrificeEvent:FireServer() end)
+                end
+                task.wait(SAC_DELAY)
+            end
+        end)
+    end
+end
+
+local function stopAutoSac()
+    autoSacOn = false
+    Config.autoSacrifice = false
+    saveConfig(Config)
+    if sacThread then task.cancel(sacThread); sacThread = nil end
+    if AutoFarmToggle then pcall(function() AutoFarmToggle:FireServer("AutoSac", false) end) end
+end
+
+-- ============================================
+--  ЛОГИКА ДАНДЖЕЙ (DUNGEONS)
+-- ============================================
+local autoDungeonOn = false
+local dungeonThread = nil
+local DUNGEON_CHECK_DELAY = 0.5
+
+local autoDungeonAFKOn = false
+local dungeonAFKThread = nil
+
+local function getDungeonRoom()
+    for _, obj in pairs(Workspace:GetChildren()) do
+        if obj.Name:match("^DungeonRun_%d+$") then
+            return obj
+        end
+    end
+    return nil
+end
+
+local function getDungeonMobs()
+    local mobs = {}
+    local room = getDungeonRoom()
+    if not room then return mobs end
+    
+    for _, mob in pairs(CollectionService:GetTagged("DungeonMob")) do
+        if mob:IsDescendantOf(room) then
+            table.insert(mobs, mob)
+        end
+    end
+    return mobs
+end
+
+local function forceApplyHitboxAndFreeze()
+    local mobs = getDungeonMobs()
+    for _, mob in pairs(mobs) do
+        local hum = mob:FindFirstChildWhichIsA("Humanoid")
+        if hum then
+            hum.WalkSpeed = 0
+            hum.JumpPower = 0
+            hum.PlatformStand = true
+        end
+        
+        for _, part in pairs(mob:GetDescendants()) do
+            if part:IsA("BasePart") then
+                pcall(function() part:SetNetworkOwner(Players.LocalPlayer) end)
+                if Config.bigHitbox and part.Name == "HumanoidRootPart" then
+                    local size = Config.hitboxSize or 10
+                    part.Size = Vector3.new(size, size, size)
+                end
+                part.AssemblyLinearVelocity = Vector3.zero
+                part.AssemblyAngularVelocity = Vector3.zero
+            end
+        end
+        
+        for _, d in pairs(mob:GetDescendants()) do
+            if d:IsA("BodyPosition") or d:IsA("BodyGyro") 
+            or d:IsA("AlignPosition") or d:IsA("AlignOrientation") then
+                pcall(function() d:Destroy() end)
+            end
+        end
+    end
+end
+
+local function dungeonFarmLoop()
+    while autoDungeonOn do
+        local room = getDungeonRoom()
+        if not room then
+            task.wait(DUNGEON_CHECK_DELAY)
+            continue
+        end
+        
+        forceApplyHitboxAndFreeze()
+        
+        local mobs = getDungeonMobs()
+        
+        if #mobs > 0 then
+            local player = Players.LocalPlayer
+            if player and player.Character then
+                local myRoot = player.Character:FindFirstChild("HumanoidRootPart")
+                if myRoot then
+                    local targetMob = mobs[1]
+                    local mobRoot = targetMob:FindFirstChild("HumanoidRootPart") or targetMob:FindFirstChildWhichIsA("BasePart")
+                    
+                    if mobRoot then
+                        myRoot.CFrame = CFrame.new(mobRoot.Position + Vector3.new(0, 3, 0))
+                        
+                        local tool = player.Character:FindFirstChildWhichIsA("Tool")
+                        if tool then pcall(function() tool:Activate() end) end
+                        local punchRemote = ReplicatedStorage:FindFirstChild("PunchHit")
+                        if punchRemote then pcall(function() punchRemote:FireServer() end) end
+                        pcall(function() VirtualUser:Button1Down(Vector2.new(0,0)); VirtualUser:Button1Up(Vector2.new(0,0)) end)
+                    end
+                end
+            end
+            task.wait(0.1)
+        else
+            local exitGate = room:FindFirstChild("Room_ExitGate")
+            if exitGate then
+                local player = Players.LocalPlayer
+                if player and player.Character then
+                    local myRoot = player.Character:FindFirstChild("HumanoidRootPart")
+                    if myRoot then
+                        myRoot.CFrame = CFrame.new(exitGate.Position + Vector3.new(0, 3, 0))
+                        task.wait(3)
+                    end
+                end
+            end
+        end
+        task.wait(0.1)
+    end
+end
+
+local function dungeonAFKFarmLoop()
+    while autoDungeonAFKOn do
+        local room = getDungeonRoom()
+        if not room then
+            task.wait(DUNGEON_CHECK_DELAY)
+            continue
+        end
+        
+        local player = Players.LocalPlayer
+        if not player or not player.Character then task.wait(1); continue end
+        local myRoot = player.Character:FindFirstChild("HumanoidRootPart")
+        if not myRoot then task.wait(1); continue end
+        
+        forceApplyHitboxAndFreeze()
+        
+        local mobs = getDungeonMobs()
+        
+        if #mobs > 0 then
+            for _, mob in pairs(mobs) do
+                local mobRoot = mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChildWhichIsA("BasePart")
+                if mobRoot then
+                    local offset = myRoot.Position + Vector3.new(math.random(-5,5), 0, math.random(-5,5))
+                    mobRoot.CFrame = CFrame.new(offset)
+                    mobRoot.AssemblyLinearVelocity = Vector3.zero
+                    mobRoot.AssemblyAngularVelocity = Vector3.zero
+                end
+            end
+            
+            local tool = player.Character:FindFirstChildWhichIsA("Tool")
+            if tool then pcall(function() tool:Activate() end) end
+            local punchRemote = ReplicatedStorage:FindFirstChild("PunchHit")
+            if punchRemote then pcall(function() punchRemote:FireServer() end) end
+            pcall(function() VirtualUser:Button1Down(Vector2.new(0,0)); VirtualUser:Button1Up(Vector2.new(0,0)) end)
+            
+            task.wait(0.1)
+        else
+            local exitGate = room:FindFirstChild("Room_ExitGate")
+            if exitGate then
+                myRoot.CFrame = CFrame.new(exitGate.Position + Vector3.new(0, 3, 0))
+            end
+            task.wait(3) 
+        end
+        task.wait(0.1)
+    end
+end
+
+local function startAutoDungeon()
+    if autoDungeonOn then return end
+    autoDungeonOn = true
+    Config.autoDungeon = true
+    saveConfig(Config)
+    dungeonThread = task.spawn(dungeonFarmLoop)
+end
+
+local function stopAutoDungeon()
+    autoDungeonOn = false
+    Config.autoDungeon = false
+    saveConfig(Config)
+    if dungeonThread then task.cancel(dungeonThread); dungeonThread = nil end
+end
+
+local function startAutoDungeonAFK()
+    if autoDungeonAFKOn then return end
+    autoDungeonAFKOn = true
+    Config.autoDungeonAFK = true
+    saveConfig(Config)
+    dungeonAFKThread = task.spawn(dungeonAFKFarmLoop)
+end
+
+local function stopAutoDungeonAFK()
+    autoDungeonAFKOn = false
+    Config.autoDungeonAFK = false
+    saveConfig(Config)
+    if dungeonAFKThread then task.cancel(dungeonAFKThread); dungeonAFKThread = nil end
+end
+
+local function smartStartDungeon(difficulty)
+    local player = Players.LocalPlayer
+    if not player or not player.Character then return false, "Нет персонажа" end
+    local myRoot = player.Character:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return false, "Нет HumanoidRootPart" end
+
+    local dungeonHub = Workspace:FindFirstChild("DungeonHub")
+    local liftCage = dungeonHub and dungeonHub:FindFirstChild("Hub_LiftCage")
+    
+    if liftCage then
+        myRoot.CFrame = CFrame.new(liftCage.Position + Vector3.new(0, 5, 0))
+        myRoot.AssemblyLinearVelocity = Vector3.zero
+        myRoot.AssemblyAngularVelocity = Vector3.zero
+        task.wait(0.2)
+    end
+
+    local remotes = ReplicatedStorage:FindFirstChild("DungeonRemotes")
+    if not remotes then return false, "DungeonRemotes not found" end
+    local startRun = remotes:FindFirstChild("StartRun")
+    if not startRun then return false, "StartRun not found" end
+    
+    pcall(function() startRun:FireServer(difficulty) end)
+    return true
+end
+
+local function tpToDungeonPortal()
+    local player = Players.LocalPlayer
+    if not player or not player.Character then return false end
+    local myRoot = player.Character:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return false end
+
+    local portal = Workspace:FindFirstChild("ada1") and Workspace.ada1:FindFirstChild("DungeonPortal")
+    if not portal then return false, "DungeonPortal not found" end
+    local tpPart = portal:FindFirstChild("Teleport") or portal:FindFirstChildWhichIsA("BasePart")
+    if not tpPart then return false, "Teleport part not found" end
+
+    myRoot.CFrame = CFrame.new(tpPart.Position + Vector3.new(0, 3, 0))
+    myRoot.AssemblyLinearVelocity = Vector3.zero
+    myRoot.AssemblyAngularVelocity = Vector3.zero
+    return true
+end
+
+local function leaveDungeon()
+    local remotes = ReplicatedStorage:FindFirstChild("DungeonRemotes")
+    if not remotes then return end
+    local leaveRun = remotes:FindFirstChild("LeaveRun")
+    if leaveRun then pcall(function() leaveRun:FireServer() end) end
+end
+
+-- ============================================
+--  GOD MODE (ЛЕВИТАЦИЯ ПОД ЗЕМЛЕЙ)
+-- ============================================
+local godModeOn = Config.godMode or false
+local godModeConn = nil
+local godModeDepth = Config.godModeDepth or 15
+
+local function startGodMode()
+    if godModeOn then return end
+    godModeOn = true
+    Config.godMode = true
+    saveConfig(Config)
+    
+    godModeConn = RunService.Heartbeat:Connect(function()
+        if not godModeOn then return end
+        local player = Players.LocalPlayer
+        if not player or not player.Character then return end
+        local myRoot = player.Character:FindFirstChild("HumanoidRootPart")
+        if not myRoot then return end
+        
+        local room = getDungeonRoom()
+        if room then
+            local mobs = getDungeonMobs()
+            if #mobs > 0 then
+                local floor = room:FindFirstChild("Room_Floor") or room:FindFirstChildWhichIsA("BasePart")
+                if floor then
+                    local targetPos = Vector3.new(myRoot.Position.X, floor.Position.Y - godModeDepth, myRoot.Position.Z)
+                    myRoot.CFrame = CFrame.new(targetPos)
+                    myRoot.AssemblyLinearVelocity = Vector3.zero
+                    myRoot.AssemblyAngularVelocity = Vector3.zero
+                    myRoot.Anchored = true
+                end
+            else
+                myRoot.Anchored = false
+            end
+        end
+    end)
+end
+
+local function stopGodMode()
+    if not godModeOn then return end
+    godModeOn = false
+    Config.godMode = false
+    saveConfig(Config)
+    if godModeConn then godModeConn:Disconnect(); godModeConn = nil end
+    
+    local player = Players.LocalPlayer
+    if player and player.Character then
+        local myRoot = player.Character:FindFirstChild("HumanoidRootPart")
+        if myRoot then myRoot.Anchored = false end
+    end
+end
+
+-- ============================================
+--  АВТОПРЫЖОК (AUTO JUMP)
+-- ============================================
+local isAutoJumpEnabled = true 
+local jumpConnection = nil
+local timeLeft = 30
+local jumpInterval = 30
+
+local function doJump()
+    local character = LocalPlayer.Character
+    if not character then return end
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
+    if humanoid:GetState() == Enum.HumanoidStateType.Dead then return end
+    if humanoid.FloorMaterial == Enum.Material.Air then return end
+    humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+end
+
+-- ============================================
+--  EVENT (HAUNTEDHOLLOW.MOBS) - ИЗМЕНЕНО
+-- ============================================
+local eventMobFarmOn = Config.eventMobFarm or false
+local eventMobFarmThread = nil
+local eventMobFarmDelay = 0.1
+
+local eventBossFarmOn = Config.eventBossFarm or false
+local eventBossFarmThread = nil
+local eventBossName = "Pumpkin King" -- Имя босса события
+
+local function getEventMobs()
+    local mobs = {}
+    local hauntedHollow = Workspace:FindFirstChild("HauntedHollow")
+    if not hauntedHollow then return mobs end
+    
+    local mobsFolder = hauntedHollow:FindFirstChild("Mobs")
+    if not mobsFolder then return mobs end
+    
+    for _, obj in pairs(mobsFolder:GetChildren()) do
+        if obj:IsA("Model") and obj:FindFirstChildWhichIsA("Humanoid") then
+            table.insert(mobs, obj)
+        end
+    end
+    return mobs
+end
+
+-- Функция поиска босса события (по имени)
+local function getEventBoss()
+    local hauntedHollow = Workspace:FindFirstChild("HauntedHollow")
+    if not hauntedHollow then return nil end
+    
+    for _, obj in pairs(hauntedHollow:GetChildren()) do
+        if obj:IsA("Model") and obj.Name:lower():find(eventBossName:lower()) then
+            local hum = obj:FindFirstChildWhichIsA("Humanoid")
+            if hum and hum.Health > 0 then
+                return obj
+            end
+        end
+    end
+    return nil
+end
+
+local function eventMobFarmLoop()
+    while eventMobFarmOn do
+        local player = Players.LocalPlayer
+        if not player or not player.Character then task.wait(1); continue end
+        local myRoot = player.Character:FindFirstChild("HumanoidRootPart")
+        if not myRoot then task.wait(1); continue end
+        
+        local mobs = getEventMobs()
+        
+        if #mobs > 0 then
+            for _, mob in pairs(mobs) do
+                prepareMob(mob)
+                local mobRoot = mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChildWhichIsA("BasePart")
+                if mobRoot then
+                    local offset = myRoot.Position + Vector3.new(math.random(-5,5), 0, math.random(-5,5))
+                    mobRoot.CFrame = CFrame.new(offset)
+                    mobRoot.AssemblyLinearVelocity = Vector3.zero
+                    mobRoot.AssemblyAngularVelocity = Vector3.zero
+                end
+            end
+            
+            local tool = player.Character:FindFirstChildWhichIsA("Tool")
+            if tool then pcall(function() tool:Activate() end) end
+            local punchRemote = ReplicatedStorage:FindFirstChild("PunchHit")
+            if punchRemote then pcall(function() punchRemote:FireServer() end) end
+            pcall(function() VirtualUser:Button1Down(Vector2.new(0,0)); VirtualUser:Button1Up(Vector2.new(0,0)) end)
+            pressF()
+        end
+        
+        task.wait(eventMobFarmDelay)
+    end
+end
+
+local function startEventMobFarm()
+    if eventMobFarmOn then return end
+    eventMobFarmOn = true
+    Config.eventMobFarm = true
+    saveConfig(Config)
+    eventMobFarmThread = task.spawn(eventMobFarmLoop)
+end
+
+local function stopEventMobFarm()
+    eventMobFarmOn = false
+    Config.eventMobFarm = false
+    saveConfig(Config)
+    if eventMobFarmThread then task.cancel(eventMobFarmThread); eventMobFarmThread = nil end
+end
+
+-- ФАРМ БОССА СОБЫТИЯ (Pumpkin King)
+local function eventBossFarmLoop()
+    while eventBossFarmOn do
+        local player = Players.LocalPlayer
+        if not player or not player.Character then task.wait(1); continue end
+        local myRoot = player.Character:FindFirstChild("HumanoidRootPart")
+        if not myRoot then task.wait(1); continue end
+        
+        local boss = getEventBoss()
+        
+        if boss then
+            prepareMob(boss) -- Замораживаем и забираем NetworkOwner
+            
+            local bossRoot = boss:FindFirstChild("HumanoidRootPart") or boss:FindFirstChild("Torso") or boss:FindFirstChildWhichIsA("BasePart")
+            if bossRoot then
+                -- Ставим босса к себе (или идем к нему? Тут ставим к себе)
+                bossRoot.CFrame = CFrame.new(myRoot.Position + Vector3.new(0, 0, -5))
+                bossRoot.AssemblyLinearVelocity = Vector3.zero
+                bossRoot.AssemblyAngularVelocity = Vector3.zero
+                
+                -- Бьем
+                local tool = player.Character:FindFirstChildWhichIsA("Tool")
+                if tool then pcall(function() tool:Activate() end) end
+                local punchRemote = ReplicatedStorage:FindFirstChild("PunchHit")
+                if punchRemote then pcall(function() punchRemote:FireServer() end) end
+                pcall(function() VirtualUser:Button1Down(Vector2.new(0,0)); VirtualUser:Button1Up(Vector2.new(0,0)) end)
+                pressF()
+            end
+        end
+        
+        task.wait(0.1)
+    end
+end
+
+local function startEventBossFarm()
+    if eventBossFarmOn then return end
+    eventBossFarmOn = true
+    Config.eventBossFarm = true
+    saveConfig(Config)
+    eventBossFarmThread = task.spawn(eventBossFarmLoop)
+end
+
+local function stopEventBossFarm()
+    eventBossFarmOn = false
+    Config.eventBossFarm = false
+    saveConfig(Config)
+    if eventBossFarmThread then task.cancel(eventBossFarmThread); eventBossFarmThread = nil end
+end
+
+-- ============================================
+--  ИНТЕРФЕЙС PAINKILLER UI
+-- ============================================
+local Window = PainKillerUI:CreateWindow({
+    Title = "Universal GUI",
+    Icon = "box",
+    Author = "v74 | PainKillerUI",
+    Folder = "UniversalGUI",
+    Size = UDim2.fromOffset(500, 400),
+    Theme = "Dark",
+    ToggleKey = Enum.KeyCode.RightShift
+})
+
+-- TOGGLE FIX
+local guiObject = Window.Gui or Window.ScreenGui or Window.Main or Window.UIElements and Window.UIElements.Main
+if guiObject then
+    UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if gameProcessed then return end
+        if input.KeyCode == Enum.KeyCode.RightShift then
+            guiObject.Visible = not guiObject.Visible
+        end
+    end)
+end
+
+-- 1. ВКЛАДКА ПРОФИЛЬ
+local PlayerTab = Window:Tab({ Title = "Игрок", Icon = "user" })
+PlayerTab:Section({ Title = "Информация" })
+PlayerTab:Image({
+    Title = LocalPlayer.DisplayName,
+    Desc = "@" .. LocalPlayer.Name,
+    Image = Players:GetUserThumbnailAsync(LocalPlayer.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size420x420),
+    ScaleType = Enum.ScaleType.Fit
+})
+
+-- 2. ВКЛАДКА TELEPORT
+local TeleportTab = Window:Tab({ Title = "Teleport", Icon = "map-pin" })
+TeleportTab:Section({ Title = "Телепорт к ada4.asc1.asc1ic" })
+adaTeleportStatus = TeleportTab:Paragraph({
+    Title = "Телепорт выключен",
+    Desc = "Нажми кнопку, чтобы запустить"
+})
+
+TeleportTab:Button({
+    Title = "🎯 Телепорт к объекту сейчас",
+    Desc = "Мгновенно телепортирует тебя к объекту",
+    Icon = "move",
+    Callback = function()
+        task.spawn(function()
+            if teleportPlayerToAda4() then
+                PainKillerUI:Notify({Title="Телепорт", Content="Ты телепортирован к объекту!", Duration=2})
+            else
+                PainKillerUI:Notify({Title="Телепорт", Content="Не найдена цель ada4.asc1.asc1ic", Duration=3})
+            end
+        end)
+    end
+})
+
+TeleportTab:Toggle({
+    Title = "Авто-телепорт к объекту",
+    Desc = "Автоматически телепортирует ТЕБЯ к объекту по таймеру",
+    Icon = "clock",
+    Value = Config.autoTeleportAda4,
+    Callback = function(state)
+        if state then startAutoTeleport() else stopAutoTeleport() end
+    end
+})
+
+TeleportTab:Slider({
+    Title = "Интервал (сек)",
+    Desc = "Как часто телепортировать",
+    Icon = "timer",
+    Value = { Min = 1, Max = 60, Default = 5 },
+    Step = 1,
+    Callback = function(value)
+        Config.teleportInterval = value
+        saveConfig(Config)
+    end
+})
+
+-- 3. ВКЛАДКА LUCK & GP
+local LuckTab = Window:Tab({ Title = "Luck & GP", Icon = "star" })
+LuckTab:Section({ Title = "Rndm Hub (Геймпассы + Удача)" })
+LuckTab:Paragraph({
+    Title = "Авто-покупка геймпассов",
+    Desc = "Скрипт 'покупает' геймпассы, которые уже куплены, и выдает удачу."
+})
+
+LuckTab:Button({
+    Title = "🚀 Загрузить Rndm Hub",
+    Desc = "Запустить скрипт для геймпассов и удачи",
+    Icon = "download",
+    Callback = function()
+        task.spawn(function()
+            PainKillerUI:Notify({Title="Загрузка", Content="Запускаем Rndm Hub...", Duration=2})
+            local success, err = pcall(function()
+                getgenv().Color = "default"
+                getgenv().TextColor = "default"
+                loadstring(game:HttpGet("https://raw.githubusercontent.com/rndmq/Serverlist/refs/heads/main/Server87"))()
+            end)
+            if not success then
+                PainKillerUI:Notify({Title="Ошибка", Content="Не удалось загрузить скрипт: " .. tostring(err), Duration=5})
+            end
+        end)
+    end
+})
+
+-- 4. ВКЛАДКА ORBS
+local OrbsTab = Window:Tab({ Title = "Orbs", Icon = "sparkles" })
+OrbsTab:Section({ Title = "Сбор орбов" })
+OrbsTab:Button({
+    Title = "ВСЕ (с фильтром)", Icon = "play",
+    Callback = function() task.spawn(function() local c = teleportOrbs("All"); PainKillerUI:Notify({Title="Орбы", Content="Собрано: "..c, Duration=2}) end) end
+})
+for i = 1, 5 do
+    local idx = i
+    OrbsTab:Button({
+        Title = "ada" .. idx, Icon = "play",
+        Callback = function() task.spawn(function() local c = teleportOrbs("ada"..idx); PainKillerUI:Notify({Title="ada"..idx, Content="Собрано: "..c, Duration=2}) end) end
+    })
+end
+OrbsTab:Toggle({
+    Title = "Автоподбор", Desc = "Собирает орбы автоматически", Icon = "zap",
+    Value = Config.autoOrbs,
+    Callback = function(state)
+        Config.autoOrbs = state; saveConfig(Config)
+        if state then task.spawn(function() while Config.autoOrbs do teleportOrbs("All"); task.wait(autoOrbsDelay) end end) end
+    end
+})
+
+-- 5. ВКЛАДКА ФИЛЬТР
+local FilterTab = Window:Tab({ Title = "Фильтр", Icon = "filter" })
+FilterTab:Section({ Title = "Что подбирать (Автосейв)" })
+local orbToggles = {}
+local function updateOrbState(orbName, state)
+    SELECTED_ORBS[orbName] = state; Config.orbFilter[orbName] = state; saveConfig(Config)
+end
+FilterTab:Button({
+    Title = "✅ Включить ВСЕ", Icon = "check",
+    Callback = function() for _, name in pairs(ALL_ORB_TYPES) do SELECTED_ORBS[name] = true; Config.orbFilter[name] = true; if orbToggles[name] then orbToggles[name]:Set(true) end end; saveConfig(Config) end
+})
+FilterTab:Button({
+    Title = "❌ Выключить ВСЕ", Icon = "x",
+    Callback = function() for _, name in pairs(ALL_ORB_TYPES) do SELECTED_ORBS[name] = false; Config.orbFilter[name] = false; if orbToggles[name] then orbToggles[name]:Set(false) end end; saveConfig(Config) end
+})
+for _, orbName in ipairs(ALL_ORB_TYPES) do
+    local toggle = FilterTab:Toggle({ Title = orbName, Value = SELECTED_ORBS[orbName], Callback = function(state) updateOrbState(orbName, state) end })
+    orbToggles[orbName] = toggle
+end
+
+-- 6. ВКЛАДКА MOBS
+local MobsTab = Window:Tab({ Title = "Mobs", Icon = "skull" })
+MobsTab:Section({ Title = "Управление мобами" })
+MobsTab:Button({ Title = "Телепорт мобов вокруг меня", Icon = "orbit", Callback = function() task.spawn(function() collectMobsOnce() end) end })
+MobsTab:Toggle({ Title = "Удерживать мобов", Icon = "lock", Value = Config.holdingMobs, Callback = function(state) Config.holdingMobs = state; saveConfig(Config); if state then startHolding() else stopHolding() end end })
+MobsTab:Toggle({
+    Title = "Авто-атака", Icon = "sword", Value = Config.autoAttack,
+    Callback = function(state) Config.autoAttack = state; saveConfig(Config); autoAttackOn = state; if state then autoAttackThread = task.spawn(attackLoop) else if autoAttackThread then task.cancel(autoAttackThread) end end end
+})
+MobsTab:Toggle({
+    Title = "Коллизия мобов", Icon = "box", Value = Config.mobCollision,
+    Callback = function(state) Config.mobCollision = state; saveConfig(Config); for _, mob in pairs(getMobs()) do for _, d in pairs(mob:GetDescendants()) do if d:IsA("BasePart") then d.CanCollide = state end end end end
+})
+MobsTab:Toggle({ Title = "Стелс-режим", Icon = "shield", Value = Config.stealthMode, Callback = function(state) Config.stealthMode = state; saveConfig(Config) end })
+
+-- 7. ВКЛАДКА AUTO JUMP
+local JumpTab = Window:Tab({ Title = "Auto Jump", Icon = "zap" })
+JumpTab:Section({ Title = "Автоматический прыжок" })
+local JumpStatus = JumpTab:Paragraph({ Title = "Следующий прыжок: 30с", Desc = "Auto Jump ВКЛЮЧЁН" })
+local function updateAutoJump(state)
+    isAutoJumpEnabled = state
+    if state then
+        timeLeft = jumpInterval
+        task.spawn(function() task.wait(0.5); doJump() end)
+        if jumpConnection then jumpConnection:Disconnect() end
+        jumpConnection = RunService.Heartbeat:Connect(function(dt)
+            if not isAutoJumpEnabled then return end
+            timeLeft = timeLeft - dt
+            if timeLeft <= 0 then doJump(); timeLeft = jumpInterval end
+            pcall(function() JumpStatus:SetTitle(string.format("Следующий прыжок: %dс", math.ceil(timeLeft))); JumpStatus:SetDesc("Auto Jump ВКЛЮЧЁН") end)
+        end)
+    else
+        if jumpConnection then jumpConnection:Disconnect(); jumpConnection = nil end
+        timeLeft = jumpInterval
+        pcall(function() JumpStatus:SetTitle("Следующий прыжок: " .. jumpInterval .. "с"); JumpStatus:SetDesc("Auto Jump ВЫКЛЮЧЕН") end)
+    end
+end
+JumpTab:Toggle({ Title = "Auto Jump", Desc = "Прыгать каждые N секунд", Icon = "zap", Value = true, Callback = function(state) updateAutoJump(state) end })
+JumpTab:Slider({
+    Title = "Интервал (сек)", Desc = "Как часто прыгать", Icon = "timer",
+    Value = { Min = 5, Max = 120, Default = 30 }, Step = 1,
+    Callback = function(value) jumpInterval = value; if not isAutoJumpEnabled then pcall(function() JumpStatus:SetTitle(string.format("Следующий прыжок: %dс", value)) end) end end
+})
+
+-- 8. ВКЛАДКА BOSS
+local BossTab = Window:Tab({ Title = "Boss", Icon = "flame" })
+BossTab:Section({ Title = "Выбор боссов (Мультивыбор)" })
+BossTab:Dropdown({
+    Title = "Целевые боссы", Desc = "Мультивыбор", Icon = "target",
+    Values = {"White Boss", "Muscle Boss", "Void Overlord"},
+    Value = Config.selectedBosses, Multi = true,
+    Callback = function(options) if type(options) == "table" then Config.selectedBosses = options else Config.selectedBosses = {options} end; saveConfig(Config) end})
+BossTab:Section({ Title = "Действия" })
+local bossStatus = BossTab:Paragraph({ Title = "Статус", Desc = "Ожидание..." })
+BossTab:Toggle({
+    Title = "Авто-спавн", Desc = "Шлет запрос на спавн для выбранных", Icon = "play",
+    Value = autoSpawnBossOn,
+    Callback = function(state) if state then startAutoSpawn(); bossStatus:SetDesc("Шлем запросы на спавн...") else stopAutoSpawn(); bossStatus:SetDesc("Авто-спавн выкл") end end
+})
+BossTab:Toggle({
+    Title = "Авто-фарм (Атака)", Desc = "Умный фарм (ждет Войда в зоне)", Icon = "crosshair",
+    Value = autoBossOn,
+    Callback = function(state) if state then startBossFarm(); bossStatus:SetDesc("Включен") else stopBossFarm(); bossStatus:SetDesc("Выключен") end end
+})
+task.spawn(function()
+    while Window do
+        if autoBossOn then
+            local voidBoss = getVoidBoss()
+            local voidSelected = table.find(Config.selectedBosses, "Void Overlord")
+            if voidSelected and not voidBoss then bossStatus:SetDesc("⏳ Ждем Войда в зоне...")
+            elseif currentTargetBoss then bossStatus:SetDesc("🔴 Фармим: " .. currentTargetBoss.Name)
+            else bossStatus:SetDesc("🔎 Ищем босса...") end
+        end
+        task.wait(1)
+    end
+end)
+
+-- БЕГ ВОКРУГ БОССА
+BossTab:Section({ Title = "Бег вокруг босса (Безопасный фарм)" })
+BossTab:Toggle({
+    Title = "🏃 Бег вокруг босса",
+    Desc = "Кружит вокруг босса, чтобы он не попадал",
+    Icon = "refresh-cw",
+    Value = Config.bossRun,
+    Callback = function(state)
+        if state then startBossRun() else stopBossRun() end
+    end
+})
+BossTab:Slider({
+    Title = "Радиус бега",
+    Desc = "Расстояние от босса (1-25)",
+    Icon = "circle",
+    Value = { Min = 1, Max = 25, Default = Config.bossRunRadius or 6 },
+    Step = 1,
+    Callback = function(value)
+        bossRunRadius = value
+        Config.bossRunRadius = value
+        saveConfig(Config)
+    end
+})
+
+BossTab:Slider({
+    Title = "Скорость бега",
+    Desc = "Скорость вращения вокруг босса",
+    Icon = "zap",
+    Value = { Min = 0.5, Max = 5, Default = Config.bossRunSpeed or 2 },
+    Step = 0.5,
+    Callback = function(value)
+        Config.bossRunSpeed = value
+        saveConfig(Config)
+    end
+})
+
+BossTab:Slider({
+    Title = "Скорость атаки (F)",
+    Desc = "Как часто нажимать F (меньше = быстрее)",
+    Icon = "keyboard",
+    Value = { Min = 0.01, Max = 0.5, Default = Config.fAttackSpeed or 0.01 },
+    Step = 0.01,
+    Callback = function(value)
+        Config.fAttackSpeed = value
+        saveConfig(Config)
+    end
+})
+
+-- 9. ВКЛАДКА AUTO SACRIFICE
+local SacrificeTab = Window:Tab({ Title = "Auto Sacrifice", Icon = "flame" })
+SacrificeTab:Section({ Title = "Умный авто-фарм" })
+
+SacrificeTab:Button({
+    Title = "🔓 АНЛОК ГЕЙМПАССА (Имитация)",
+    Desc = "Ставит атрибуты и включает авто-режимы",
+    Icon = "unlock",
+    Callback = function() unlockGamepass() end
+})
+
+SacrificeTab:Button({
+    Title = "🔥 Сделать 1 Sacrifice",
+    Desc = "Мгновенно пожертвовать ресурсы",
+    Icon = "flame",
+    Callback = function()
+        if SacrificeEvent then
+            pcall(function() SacrificeEvent:FireServer() end)
+            PainKillerUI:Notify({Title="Sacrifice", Content="Запрос отправлен", Duration=2})
+        else
+            PainKillerUI:Notify({Title="Ошибка", Content="Remote не найден", Duration=3})
+        end
+    end
+})
+
+SacrificeTab:Toggle({
+    Title = "Умный авто-фарм (следит за уровнем)",
+    Desc = "Жертвует, когда уровень перестает расти",
+    Icon = "brain",
+    Value = Config.smartSacrifice,
+    Callback = function(state)
+        Config.smartSacrifice = state
+        saveConfig(Config)
+        if state and not autoSacOn then
+            startAutoSac()
+        elseif not state and autoSacOn then
+            stopAutoSac()
+        end
+    end
+})
+
+SacrificeTab:Toggle({
+    Title = "Режим спама (без остановки)",
+    Desc = "Просто спамит Remote каждую секунду",
+    Icon = "refresh-cw",
+    Value = false,
+    Callback = function(state)
+        if state then
+            Config.smartSacrifice = false
+            saveConfig(Config)
+            startAutoSac()
+        elseif not state then
+            stopAutoSac()
+        end
+    end
+})
+
+SacrificeTab:Slider({
+    Title = "Порог замедления (сек)",
+    Desc = "Сколько ждать без роста уровня",
+    Icon = "timer",
+    Value = { Min = 1, Max = 10, Default = Config.smartThreshold or 2 },
+    Step = 0.5,
+    Callback = function(value)
+        SMART_THRESHOLD = value
+        Config.smartThreshold = value
+        saveConfig(Config)
+    end
+})
+
+-- 10. ВКЛАДКА DUNGEONS
+local DungeonTab = Window:Tab({ Title = "Dungeons", Icon = "shield" })
+DungeonTab:Section({ Title = "Авто-фарм Подземелий (DungeonRun)" })
+
+DungeonTab:Dropdown({
+    Title = "Сложность",
+    Desc = "Easy / Normal / Hard / Nightmare",
+    Icon = "layers",
+    Values = {"Easy", "Normal", "Hard", "Nightmare"},
+    Value = Config.dungeonDifficulty,
+    Callback = function(option)
+        Config.dungeonDifficulty = option
+        saveConfig(Config)
+    end
+})
+
+DungeonTab:Button({
+    Title = "🚀 Начать забег (TP в клетку + StartRun)",
+    Desc = "Телепортирует в Hub_LiftCage и вызывает StartRun",
+    Icon = "play",
+    Callback = function()
+        local success, msg = smartStartDungeon(Config.dungeonDifficulty)
+        if success then
+            PainKillerUI:Notify({Title="Dungeon", Content="Забег начат ("..Config.dungeonDifficulty..")!", Duration=3})
+        else
+            PainKillerUI:Notify({Title="Ошибка", Content=msg, Duration=3})
+        end
+    end
+})
+
+DungeonTab:Button({
+    Title = "🚪 Войти в данж (TP)",
+    Desc = "Телепортирует к комнате DungeonRun_1",
+    Icon = "door-open",
+    Callback = function()
+        local room = getDungeonRoom()
+        if room then
+            local player = Players.LocalPlayer
+            if player and player.Character then
+                local myRoot = player.Character:FindFirstChild("HumanoidRootPart")
+                if myRoot then
+                    local spawnPart = room:FindFirstChild("Room_Floor") or room:FindFirstChildWhichIsA("BasePart")
+                    if spawnPart then
+                        myRoot.CFrame = CFrame.new(spawnPart.Position + Vector3.new(0, 5, 0))
+                        PainKillerUI:Notify({Title="Dungeon", Content="Ты в данже!", Duration=2})
+                    end
+                end
+            end
+        else
+            PainKillerUI:Notify({Title="Ошибка", Content="DungeonRun не найден", Duration=3})
+        end
+    end
+})
+
+DungeonTab:Button({
+    Title = "🌀 ТП к порталу данжа",
+    Desc = "Телепортирует к ada1.DungeonPortal.Teleport",
+    Icon = "map-pin",
+    Callback = function()
+        local success, msg = tpToDungeonPortal()
+        if success then
+            PainKillerUI:Notify({Title="Dungeon", Content="Ты у портала!", Duration=2})
+        else
+            PainKillerUI:Notify({Title="Ошибка", Content=msg, Duration=3})
+        end
+    end
+})
+
+DungeonTab:Toggle({
+    Title = "🤖 Авто-фарм данжей (Активный)",
+    Desc = "Убивает мобов (телепорт к ним) и идет к выходу",
+    Icon = "play",
+    Value = Config.autoDungeon,
+    Callback = function(state)
+        if state then startAutoDungeon() else stopAutoDungeon() end
+    end
+})
+
+DungeonTab:Button({
+    Title = "🚫 Выйти из данжа",
+    Desc = "Вызывает LeaveRun (выход в хаб)",
+    Icon = "log-out",
+    Callback = function()
+        leaveDungeon()
+        PainKillerUI:Notify({Title="Dungeon", Content="Вызов LeaveRun отправлен", Duration=2})
+    end
+})
+
+DungeonTab:Section({ Title = "Хитрости (God Mode)" })
+
+DungeonTab:Toggle({
+    Title = "🛡 Левитация под землей (God Mode)",
+    Desc = "Поднимает вниз. Мобы не достают.",
+    Icon = "shield",
+    Value = Config.godMode,
+    Callback = function(state)
+        if state then startGodMode() else stopGodMode() end
+    end
+})
+
+DungeonTab:Slider({
+    Title = "Глубина левитации",
+    Desc = "Как глубоко под полом летать (до 50)",
+    Icon = "arrow-down",
+    Value = { Min = 1, Max = 50, Default = godModeDepth },
+    Step = 1,
+    Callback = function(value)
+        godModeDepth = value
+        Config.godModeDepth = value
+        saveConfig(Config)
+    end
+})
+
+DungeonTab:Toggle({
+    Title = "👊 Увеличение хитбокса мобов",
+    Desc = "Растягивает HRP мобов, чтобы бить сквозь пол",
+    Icon = "box",
+    Value = Config.bigHitbox,
+    Callback = function(state)
+        Config.bigHitbox = state
+        saveConfig(Config)
+    end
+})
+
+DungeonTab:Slider({
+    Title = "Размер хитбокса",
+    Desc = "Насколько большой хитбокс (1-100)",
+    Icon = "maximize",
+    Value = { Min = 1, Max = 100, Default = Config.hitboxSize or 10 },
+    Step = 1,
+    Callback = function(value)
+        Config.hitboxSize = value
+        saveConfig(Config)
+    end
+})
+
+-- 11. ВКЛАДКА DUNGEON AFK
+local DungeonAFKTab = Window:Tab({ Title = "Dungeon AFK", Icon = "users" })
+DungeonAFKTab:Section({ Title = "Пассивный фарм для Альта/Друзей" })
+DungeonAFKTab:Paragraph({
+    Title = "Как это работает:",
+    Desc = "Мобы сами летят к тебе. Когда все убиты - скрипт ждет переход. Идеально для AFK."
+})
+
+DungeonAFKTab:Dropdown({
+    Title = "Сложность (AFK)",
+    Desc = "Easy / Normal / Hard / Nightmare",
+    Icon = "layers",
+    Values = {"Easy", "Normal", "Hard", "Nightmare"},
+    Value = Config.dungeonDifficulty,
+    Callback = function(option)
+        Config.dungeonDifficulty = option
+        saveConfig(Config)
+    end
+})
+
+DungeonAFKTab:Button({
+    Title = "🚀 Начать AFK забег (TP + StartRun)",
+    Desc = "Телепортирует в Hub_LiftCage и вызывает StartRun",
+    Icon = "play",
+    Callback = function()
+        local success, msg = smartStartDungeon(Config.dungeonDifficulty)
+        if success then
+            PainKillerUI:Notify({Title="Dungeon AFK", Content="Забег начат ("..Config.dungeonDifficulty..")!", Duration=3})
+        else
+            PainKillerUI:Notify({Title="Ошибка", Content=msg, Duration=3})
+        end
+    end
+})
+
+DungeonAFKTab:Button({
+    Title = "🌀 ТП к порталу данжа",
+    Desc = "Телепортирует к ada1.DungeonPortal.Teleport",
+    Icon = "map-pin",
+    Callback = function()
+        local success, msg = tpToDungeonPortal()
+        if success then
+            PainKillerUI:Notify({Title="Dungeon AFK", Content="Ты у портала!", Duration=2})
+        else
+            PainKillerUI:Notify({Title="Ошибка", Content=msg, Duration=3})
+        end
+    end
+})
+
+DungeonAFKTab:Toggle({
+    Title = "🧘 Пассивный авто-фарм",
+    Desc = "Притягивает мобов, бьет и ждет перехода",
+    Icon = "users",
+    Value = Config.autoDungeonAFK,
+    Callback = function(state)
+        if state then startAutoDungeonAFK() else stopAutoDungeonAFK() end
+    end
+})
+
+-- 12. ВКЛАДКА EVENT
+local EventTab = Window:Tab({ Title = "Event", Icon = "star" })
+EventTab:Section({ Title = "Мобы события (HauntedHollow)" })
+EventTab:Paragraph({
+    Title = "Фарм мобов события",
+    Desc = "Притягивает всех мобов из HauntedHollow.Mobs."
+})
+
+EventTab:Button({
+    Title = "🔍 Найти мобов события",
+    Desc = "Ищет всех мобов в HauntedHollow и телепортирует к тебе",
+    Icon = "search",
+    Callback = function()
+        local mobs = getEventMobs()
+        if #mobs > 0 then
+            local player = Players.LocalPlayer
+            local myRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+            if myRoot then
+                for _, mob in pairs(mobs) do
+                    prepareMob(mob)
+                    local mobRoot = mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChildWhichIsA("BasePart")
+                    if mobRoot then
+                        mobRoot.CFrame = CFrame.new(myRoot.Position + Vector3.new(0, 0, -5))
+                    end
+                end
+                PainKillerUI:Notify({Title="Event", Content="Найдено и притянуто мобов: " .. #mobs, Duration=2})
+            end
+        else
+            PainKillerUI:Notify({Title="Event", Content="Мобы события не найдены", Duration=3})
+        end
+    end
+})
+
+EventTab:Toggle({
+    Title = "🤖 Авто-фарм мобов события",
+    Desc = "Притягивает и убивает всех мобов HauntedHollow",
+    Icon = "play",
+    Value = Config.eventMobFarm,
+    Callback = function(state)
+        if state then startEventMobFarm() else stopEventMobFarm() end
+    end
+})
+
+-- НОВЫЙ БЛОК ДЛЯ БОССА СОБЫТИЯ
+EventTab:Section({ Title = "Босс события (Pumpkin King)" })
+EventTab:Paragraph({
+    Title = "Фарм босса Pumpkin King",
+    Desc = "Ищет босса в HauntedHollow и убивает."
+})
+
+EventTab:Button({
+    Title = "👑 Найти и притянуть босса",
+    Desc = "Ищет Pumpkin King и телепортирует к тебе",
+    Icon = "crown",
+    Callback = function()
+        local boss = getEventBoss()
+        if boss then
+            prepareMob(boss)
+            local player = Players.LocalPlayer
+            local myRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+            if myRoot then
+                local bossRoot = boss:FindFirstChild("HumanoidRootPart") or boss:FindFirstChild("Torso") or boss:FindFirstChildWhichIsA("BasePart")
+                if bossRoot then
+                    bossRoot.CFrame = CFrame.new(myRoot.Position + Vector3.new(0, 0, -5))
+                    PainKillerUI:Notify({Title="Event", Content="Босс притянут!", Duration=2})
+                end
+            end
+        else
+            PainKillerUI:Notify({Title="Event", Content="Босс не найден", Duration=3})
+        end
+    end
+})
+
+EventTab:Toggle({
+    Title = "🤖 Авто-фарм босса события",
+    Desc = "Притягивает и убивает Pumpkin King",
+    Icon = "play",
+    Value = Config.eventBossFarm,
+    Callback = function(state)
+        if state then startEventBossFarm() else stopEventBossFarm() end
+    end
+})
+
+-- 13. ВКЛАДКА OTHER
+local OtherTab = Window:Tab({ Title = "Other", Icon = "wrench" })
+OtherTab:Section({ Title = "Полезные скрипты" })
+OtherTab:Button({ Title = "DarkDex", Icon = "code", Callback = function() pcall(function() loadstring(game:HttpGet("https://raw.githubusercontent.com/Babyhamsta/RBLX_Scripts/main/Universal%20Dark%20Dex.lua"))() end) end })
+OtherTab:Button({ Title = "Infinite Yield", Icon = "terminal", Callback = function() pcall(function() loadstring(game:HttpGet("https://github.com/EdgeIY/infiniteyield/master/source"))() end) end })
+OtherTab:Button({ Title = "Anti-AFK", Icon = "clock", Callback = function() pcall(function() loadstring(game:HttpGet("https://raw.githubusercontent.com/hassanxzayn-lua/Anti-afk/main/antiafkbyhassanxzyn"))() end) end })
+
+-- АВТОСТАРТ
+task.spawn(function() task.wait(1); updateAutoJump(true) end)
+LocalPlayer.OnTeleport:Connect(function()
+    if stopHolding then stopHolding() end
+    if stopBossFarm then stopBossFarm() end
+    if stopAutoSpawn then stopAutoSpawn() end
+    if stopAutoTeleport then stopAutoTeleport() end
+    if stopAutoSac then stopAutoSac() end
+    if stopAutoDungeon then stopAutoDungeon() end
+    if stopAutoDungeonAFK then stopAutoDungeonAFK() end
+    if stopGodMode then stopGodMode() end
+    if stopBossRun then stopBossRun() end
+    if stopEventMobFarm then stopEventMobFarm() end
+    if stopEventBossFarm then stopEventBossFarm() end
+    pcall(function() PainKillerUI:DisconnectAll() end)
+end)
+print("[Universal GUI v74 | PainKillerUI] Загружен.")
