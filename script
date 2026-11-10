@@ -4,7 +4,8 @@
 -- ============================================
 
 -- 1. ЗАГРУЗКА ТВОЕЙ БИБЛИОТЕКИ
-local PainKillerUI = loadstring(game:HttpGet("--[[
+local PainKillerUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/AgostDead/My-Library/main/dist/main.lua"))()
+--[[
     Author: Angry66gsjjd ()
     Github: https://github.com/Angry66gsjjd/PainKillersUI
     License: MIT
